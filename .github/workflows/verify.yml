@@ -1,0 +1,179 @@
+# CI for the Riptide Arcade game substrate.
+#
+# On every pull request (and every push to main):
+#   - verify:  npm run verify -- <dir> for EVERY game dir under games/
+#              (any directory containing index.html — never hardcoded),
+#              then npm run regression once.
+#   - playtest: only the game dirs CHANGED by the PR (diff against the PR base).
+#              On pushes to main, or when the base cannot be determined, we
+#              playtest NOTHING (stated in the job summary) rather than
+#              everything. Each playtest-report/ is uploaded as an artifact
+#              (named after the game dir, uploaded even when the run failed,
+#              so a failed playtest is still inspectable).
+#
+# Budget: the whole run stays under 5 minutes — one dependency (playwright),
+# npm cache, cached Chromium download, and the verify/playtest jobs run in
+# parallel. No secrets are used anywhere; permissions are read-only.
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Verify + regression across every game in the repo.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium (with OS deps)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium OS deps only (browser cached)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Verify every game dir
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          status=0
+          found=0
+          for entry in games/*/index.html; do
+            found=1
+            dir=$(dirname "$entry")
+            echo "::group::npm run verify -- $dir"
+            if ! npm run verify -- "$dir"; then
+              echo "::error::verify failed for $dir"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "no game dirs (games/*/index.html) found — nothing to verify"
+          fi
+          exit "$status"
+
+      - name: Regression suite
+        run: npm run regression
+
+  # Work out which game dirs this PR changed (fast, no npm install).
+  detect-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: we diff against the PR base commit
+
+      - name: Diff against the PR base
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          changed='[]'
+          note=''
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              names=$(git diff --name-only "$BASE_SHA" HEAD -- games/ | cut -d/ -f2 | sort -u)
+              keep=()
+              for name in $names; do
+                # only real game dirs that still exist count
+                if [ -f "games/$name/index.html" ]; then keep+=("$name"); fi
+              done
+              if [ "${#keep[@]}" -gt 0 ]; then
+                changed=$(printf '%s\n' "${keep[@]}" | jq -R . | jq -cs .)
+              else
+                note='No game directories changed in this PR — playtest skipped.'
+              fi
+            else
+              note='PR base commit not available for diff — playtesting nothing (fallback).'
+            fi
+          else
+            note='Push event (not a pull request) — playtesting nothing.'
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Playtest selection'
+            if [ "$changed" = "[]" ]; then
+              echo "$note"
+            else
+              echo 'Changed game dirs to playtest:'
+              echo '```json'
+              echo "$changed"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Playtest each changed game dir; upload its report even when it fails.
+  playtest:
+    needs: detect-changed
+    if: needs.detect-changed.outputs.changed != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        game: ${{ fromJSON(needs.detect-changed.outputs.changed) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium (with OS deps)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium OS deps only (browser cached)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Playtest ${{ matrix.game }}
+        run: npm run playtest -- "games/${{ matrix.game }}"
+
+      - name: Upload playtest report
+        if: always() # a failed playtest must still be inspectable
+        uses: actions/upload-artifact@v4
+        with:
+          name: playtest-report-${{ matrix.game }}
+          path: games/${{ matrix.game }}/playtest-report/
+          if-no-files-found: warn
