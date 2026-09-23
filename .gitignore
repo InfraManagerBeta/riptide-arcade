@@ -1,0 +1,4 @@
+node_modules/
+playtest-report/
+.DS_Store
+Thumbs.db
