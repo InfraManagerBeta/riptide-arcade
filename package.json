@@ -1,0 +1,17 @@
+{
+  "name": "riptide-arcade",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A factory for small static browser games: base template, verifiers, playtest harness.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "verify": "node tools/verify/index.js",
+    "playtest": "node tools/playtest/index.js",
+    "regression": "node tests/regression/run.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

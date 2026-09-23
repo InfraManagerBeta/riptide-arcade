@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fixture Pong</title>
+<style>
+  /* RULE: games are single self-contained files — all CSS lives inline here.
+     No external stylesheets, no fonts, no network at play time. */
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0e14; overflow: hidden; }
+  /* touch-action: none — the input layer owns pointer gestures; the page never scrolls/zooms. */
+  #game { display: block; width: 100%; height: 100%; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+/* =============================================================================
+ * FIXTURE PONG — built FROM templates/base-game.html. Deliberately minimal:
+ * one screen, one mechanic. It exists to prove the substrate (loop, state
+ * machine, input layer, rng, __test hooks), not to be fun.
+ *
+ * The shell below is the template verbatim; the ===== GAME ===== section is
+ * the fixture. Every structural rule is commented at the point of temptation —
+ * KEEP the comments when you copy.
+ * ========================================================================== */
+'use strict';
+(() => {
+
+  // ---------------------------------------------------------------------------
+  // Config
+  // ---------------------------------------------------------------------------
+  const GAME_TITLE = 'FIXTURE PONG';
+  // RULE: fixed-timestep simulation. The sim ONLY ever advances in FIXED_DT
+  // steps (accumulator pattern below); rendering interpolates with an alpha.
+  const FIXED_DT = 1 / 60;
+  // RULE: clamp the frame delta. A backgrounded/hitching tab must not produce a
+  // spiral of death by queueing thousands of catch-up ticks.
+  const MAX_FRAME_DELTA = 0.25;
+  const TEST_MODE = new URLSearchParams(location.search).get('test') === '1';
+
+  // ---------------------------------------------------------------------------
+  // Error capture — feeds __test.errors. Hooked from load, before anything runs.
+  // ---------------------------------------------------------------------------
+  const capturedErrors = [];
+  function captureError(type, message, stack) {
+    if (capturedErrors.length >= 100) return; // cap so snapshots stay cheap
+    const entry = { type: String(type), message: String(message) };
+    if (typeof stack === 'string' && stack) entry.stack = stack;
+    capturedErrors.push(entry);
+  }
+  window.addEventListener('error', (e) => {
+    captureError('error', e.message || 'uncaught error', e.error && e.error.stack);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    captureError('unhandledrejection',
+      (r && r.message) || String(r), r && r.stack);
+  });
+  const _consoleError = console.error.bind(console);
+  console.error = (...args) => {
+    captureError('console.error', args.map((a) => {
+      if (a instanceof Error) return a.message;
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch (_) { return String(a); }
+    }).join(' '), args[0] instanceof Error ? args[0].stack : undefined);
+    _consoleError(...args);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Seedable PRNG (mulberry32)
+  // RULE: ALL game randomness goes through rng(). Math.random is FORBIDDEN in
+  // games — it breaks the determinism verifier. Under ?test=1 any Math.random
+  // call is recorded into __test.errors (and redirected through rng()).
+  // ---------------------------------------------------------------------------
+  const DEFAULT_SEED = 1337; // constant, never Date.now(): default load is deterministic
+  let rngState = DEFAULT_SEED >>> 0;
+  function seedRng(s) { rngState = Number(s) >>> 0; }
+  function rng() {
+    rngState = (rngState + 0x6D2B79F5) >>> 0;
+    let t = rngState;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  // ---------------------------------------------------------------------------
+  // State machine
+  // ---------------------------------------------------------------------------
+  const STATES = ['LOADING', 'MENU', 'PLAYING', 'PAUSED', 'GAME_OVER'];
+  // RULE: `state` is module-private and assigned in exactly TWO places: this
+  // initializer and setState() below. Assigning it anywhere else is a defect.
+  let state = 'LOADING';
+
+  // RULE: the ONE state-machine chokepoint. Every transition goes through
+  // setState(); it is the only code (besides the initializer) that assigns
+  // `state`, and the ONLY caller of resetAudioState().
+  function setState(next) {
+    if (!STATES.includes(next)) throw new Error('setState: unknown state ' + next);
+    if (next === state) return;
+    const prev = state;
+    onStateExit(prev);
+    state = next;
+    // RULE: audio state resets HERE, on the transition — never from scattered
+    // call sites. This is what keeps sounds from leaking across states.
+    resetAudioState();
+    onStateEnter(next);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audio lifecycle
+  // ---------------------------------------------------------------------------
+  // RULE: the AudioContext is created/unlocked on the FIRST USER GESTURE only
+  // (autoplay policy). Never construct it at load time.
+  let audioCtx = null;
+  const continuousNodes = new Set(); // register every looping/continuous source here
+  function unlockAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (_) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  // RULE: called ONLY from setState(). Do not call this anywhere else — if you
+  // need audio to stop, make a state transition or stop your own node.
+  function resetAudioState() {
+    for (const node of continuousNodes) {
+      try { if (typeof node.stop === 'function') node.stop(); } catch (_) {}
+      try { node.disconnect(); } catch (_) {}
+    }
+    continuousNodes.clear();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Input mapping layer
+  // RULE: keyboard, pointer and touch events are normalized HERE, in one place,
+  // into the canonical named actions. Game code reads `actions.left` etc. (or
+  // justPressed/justReleased) and NEVER raw events. __test.input() goes through
+  // the same setAction() chokepoint — no bypass.
+  // ---------------------------------------------------------------------------
+  const ACTION_NAMES = ['left', 'right', 'up', 'down', 'primary', 'pause'];
+  const actions = {};
+  const prevActions = {};
+  for (const a of ACTION_NAMES) { actions[a] = false; prevActions[a] = false; }
+
+  function setAction(action, pressed) { // the ONE input chokepoint
+    if (!ACTION_NAMES.includes(action)) return;
+    actions[action] = !!pressed;
+  }
+  // Edge helpers — sampled against the previous fixed tick, so a held key is
+  // one press, not an OS-repeat stream.
+  function justPressed(a) { return actions[a] && !prevActions[a]; }
+  function justReleased(a) { return !actions[a] && prevActions[a]; }
+
+  const KEY_TO_ACTION = {
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right',
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    Space: 'primary', Enter: 'primary',
+    KeyP: 'pause', Escape: 'pause',
+  };
+  window.addEventListener('keydown', (e) => {
+    const a = KEY_TO_ACTION[e.code];
+    if (!a) return;
+    e.preventDefault(); // RULE: the game owns its keys — never let them scroll the page
+    unlockAudio();      // first-gesture unlock lives on real input events only
+    if (e.repeat) return; // RULE: pressed/released EDGES only — ignore OS key repeat
+    setAction(a, true);
+  });
+  window.addEventListener('keyup', (e) => {
+    const a = KEY_TO_ACTION[e.code];
+    if (!a) return;
+    e.preventDefault();
+    setAction(a, false);
+  });
+  // Pointer events cover mouse, touch and pen — this is the single non-keyboard
+  // entry point into the action layer.
+  const canvas = document.getElementById('game');
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    unlockAudio();
+    setAction('primary', true);
+  });
+  canvas.addEventListener('pointerup', () => setAction('primary', false));
+  canvas.addEventListener('pointercancel', () => setAction('primary', false));
+
+  // ---------------------------------------------------------------------------
+  // Canvas, resize, visibility, reduced motion
+  // ---------------------------------------------------------------------------
+  const ctx = canvas.getContext('2d');
+  let viewW = 0, viewH = 0;
+  // RULE: devicePixelRatio-aware sizing — the backing store is scaled by dpr,
+  // the CSS size stays logical, and all drawing happens in logical pixels.
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    viewW = window.innerWidth;
+    viewH = window.innerHeight;
+    canvas.width = Math.max(1, Math.round(viewW * dpr));
+    canvas.height = Math.max(1, Math.round(viewH * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // RULE: a hidden tab auto-pauses. PLAYING → PAUSED on visibilitychange; the
+  // player resumes manually. Never let the sim free-run while invisible.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state === 'PLAYING') setState('PAUSED');
+  });
+
+  // RULE: games must respect REDUCED_MOTION (prefers-reduced-motion): damp or
+  // remove non-essential motion, shake, and flashes when it is true.
+  const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let REDUCED_MOTION = reducedMotionQuery.matches;
+  if (typeof reducedMotionQuery.addEventListener === 'function') {
+    reducedMotionQuery.addEventListener('change', (e) => { REDUCED_MOTION = e.matches; });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fixed-timestep simulation core
+  // ---------------------------------------------------------------------------
+  let totalTicks = 0; // fixed steps since load — the ONLY clock the sim may read
+
+  function update(dt) {
+    // RULE: update() must be genuinely time-independent. NEVER read Date.now()
+    // or performance.now() in here or in anything it calls — time-derived
+    // effects use the tick counter (totalTicks * FIXED_DT). __test.tick() and
+    // the rAF loop both drive THIS function; it is the single sim entry point.
+    //
+    // RULE: updateContinuousAudio() runs unconditionally, BEFORE any
+    // state-guarded early return below, so continuous sounds can never keep
+    // playing into a state that shouldn't have them.
+    updateContinuousAudio();
+    gameUpdate(dt);
+    totalTicks++;
+    for (const a of ACTION_NAMES) prevActions[a] = actions[a]; // edge bookkeeping — keep LAST
+  }
+
+  function render(alpha) {
+    ctx.clearRect(0, 0, viewW, viewH);
+    gameRender(ctx, viewW, viewH, alpha);
+  }
+
+  // RULE: accumulator pattern. Real time only ever becomes whole FIXED_DT
+  // steps; the leftover fraction becomes the render interpolation alpha.
+  let accumulator = 0;
+  let lastFrameTime = null;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (lastFrameTime === null) { lastFrameTime = now; render(1); return; }
+    let delta = (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
+    if (delta > MAX_FRAME_DELTA) delta = MAX_FRAME_DELTA; // spiral-of-death clamp
+    accumulator += delta;
+    while (accumulator >= FIXED_DT) {
+      update(FIXED_DT);
+      accumulator -= FIXED_DT;
+    }
+    render(accumulator / FIXED_DT);
+  }
+
+  // ---------------------------------------------------------------------------
+  // window.__test — the verification hook. THE load-bearing piece of this repo:
+  // all headless tooling drives the game through it (state, not pixels).
+  // RULE: created if and ONLY if the URL carries ?test=1. Without it,
+  // window.__test stays undefined — never define a stub.
+  // ---------------------------------------------------------------------------
+  if (TEST_MODE) {
+    const exposedFns = [];
+    // Enforce the no-Math.random rule under test: record a defect, keep running
+    // deterministically by redirecting through rng().
+    Math.random = function () {
+      captureError('math.random', 'Math.random() called — games must use the template rng()');
+      return rng();
+    };
+    window.__test = {
+      // current state name
+      state: () => state,
+      // games register snapshot providers; fn returns a JSON-serializable object
+      expose: (fn) => { if (typeof fn === 'function') exposedFns.push(fn); },
+      // template fields merged with everything the game exposed (game keys win).
+      // totalTicks is deliberately NOT included: it counts real-time rAF frames
+      // too, so it would differ between two identical seeded runs and break
+      // the determinism verifier. Games expose their own deterministic counters.
+      snapshot: () => {
+        const snap = { state, reducedMotion: REDUCED_MOTION };
+        for (const fn of exposedFns) {
+          try { Object.assign(snap, fn()); }
+          catch (e) { captureError('snapshot', e.message || String(e), e.stack); }
+        }
+        return JSON.parse(JSON.stringify(snap)); // guarantee serializability
+      },
+      // advance exactly n fixed steps synchronously through the SAME update()
+      // the rAF loop uses. Afterwards the accumulator and frame clock reset so
+      // the running rAF loop cannot double-step time we already simulated.
+      tick: (n) => {
+        n = Math.max(0, Math.floor(Number(n) || 0));
+        for (let i = 0; i < n; i++) update(FIXED_DT);
+        accumulator = 0;
+        lastFrameTime = null;
+        render(1);
+      },
+      // deterministic reseed of the PRNG (mulberry32 has no derived state)
+      seed: (s) => { seedRng(s); },
+      // inject a named action through the same input chokepoint — no bypass
+      input: (action, pressed) => { setAction(action, pressed); },
+      // live array of { type, message, stack? } captured since load
+      errors: capturedErrors,
+    };
+  }
+
+  /* ===========================================================================
+   * ===== GAME ================================================================
+   * Fixture pong. One paddle at the bottom (left/right), a ball that bounces
+   * off the side walls, the ceiling and the paddle. primary serves from MENU
+   * and restarts from GAME_OVER; pause toggles PLAYING ⇄ PAUSED. Each paddle
+   * hit scores 1. A miss costs a life; 3 lives, 0 lives → GAME_OVER.
+   * Serve angles guarantee a stationary paddle misses, so GAME_OVER is
+   * reachable with no input within ~120 ticks of the first serve.
+   * ======================================================================== */
+
+  // Virtual playfield — game logic runs in this fixed coordinate space and is
+  // scaled to the canvas at render time, so resizing never touches the sim.
+  const FIELD_W = 400, FIELD_H = 300;
+  const PADDLE_W = 60, PADDLE_H = 10, PADDLE_Y = FIELD_H - 20, PADDLE_SPEED = 300;
+  const BALL_R = 5, BALL_SPEED_Y = 240;
+  // Serve vx is large enough that, from a centered serve, the ball lands at
+  // least (SERVE_VX_MIN * 0.52s fall time) ≈ 52px off-center — outside a
+  // stationary centered paddle (half-width 30 + ball 5). That keeps GAME_OVER
+  // reachable without input, which verifiers rely on. Don't "fix" serves to be
+  // catchable, and don't make the paddle magnetic.
+  const SERVE_VX_MIN = 100, SERVE_VX_MAX = 150;
+  const START_LIVES = 3;
+
+  let score = 0;
+  let lives = START_LIVES;
+  let runTicks = 0; // fixed steps since the current run started (PLAYING only)
+  const paddle = { x: FIELD_W / 2, prevX: FIELD_W / 2 };
+  const ball = { x: FIELD_W / 2, y: FIELD_H / 2, vx: 0, vy: 0, active: false,
+                 prevX: FIELD_W / 2, prevY: FIELD_H / 2 };
+
+  // Restart resets EVERYTHING: score, lives, tick counter, paddle and ball.
+  // A restart that leaks previous-run state is the bug class the regression
+  // suite hunts — reset every field here, not lazily elsewhere.
+  function startRun() {
+    score = 0;
+    lives = START_LIVES;
+    runTicks = 0;
+    paddle.x = paddle.prevX = FIELD_W / 2;
+    serve();
+  }
+
+  function serve() {
+    ball.x = ball.prevX = FIELD_W / 2;
+    ball.y = ball.prevY = FIELD_H / 2;
+    // Serve angle is the fixture's one piece of randomness — through rng(),
+    // NEVER Math.random (determinism verifier runs the same seed twice).
+    const dir = rng() < 0.5 ? -1 : 1;
+    ball.vx = dir * (SERVE_VX_MIN + rng() * (SERVE_VX_MAX - SERVE_VX_MIN));
+    ball.vy = BALL_SPEED_Y;
+    ball.active = true;
+  }
+
+  function gameInit() { /* virtual playfield needs no size-dependent init */ }
+
+  function onStateEnter(next) {
+    if (next === 'GAME_OVER') ball.active = false; // ball leaves play
+  }
+  function onStateExit(prev) { /* nothing to tear down */ }
+
+  // RULE: continuous/looping sound levels are updated HERE every tick — this
+  // hook runs before any state guard, so a loop can never leak across states.
+  function updateContinuousAudio() { /* fixture has no continuous sounds */ }
+
+  // One-shot blip on paddle hits. Safe when audio is locked (headless): no-op.
+  function blip() {
+    if (!audioCtx || audioCtx.state !== 'running') return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 440 + (score % 8) * 55;
+    gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.12);
+  }
+
+  function gameUpdate(dt) {
+    // All transitions below go through setState() — never assign `state`.
+    switch (state) {
+      case 'MENU':
+        if (justPressed('primary')) { startRun(); setState('PLAYING'); }
+        break;
+
+      case 'PLAYING': {
+        if (justPressed('pause')) { setState('PAUSED'); break; }
+        runTicks++;
+
+        // Paddle — reads the action layer only, never raw events.
+        paddle.prevX = paddle.x;
+        if (actions.left) paddle.x -= PADDLE_SPEED * dt;
+        if (actions.right) paddle.x += PADDLE_SPEED * dt;
+        if (paddle.x < PADDLE_W / 2) paddle.x = PADDLE_W / 2;
+        if (paddle.x > FIELD_W - PADDLE_W / 2) paddle.x = FIELD_W - PADDLE_W / 2;
+
+        // Ball
+        ball.prevX = ball.x; ball.prevY = ball.y;
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+        if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = -ball.vx; }
+        if (ball.x > FIELD_W - BALL_R) { ball.x = FIELD_W - BALL_R; ball.vx = -ball.vx; }
+        if (ball.y < BALL_R) { ball.y = BALL_R; ball.vy = -ball.vy; }
+
+        // Paddle hit: reflect up (vx preserved — the ball's path is a pure
+        // function of the serve, which keeps scripted probes reliable), score++.
+        if (ball.vy > 0 &&
+            ball.y + BALL_R >= PADDLE_Y &&
+            ball.y - BALL_R <= PADDLE_Y + PADDLE_H &&
+            Math.abs(ball.x - paddle.x) <= PADDLE_W / 2 + BALL_R) {
+          ball.y = PADDLE_Y - BALL_R;
+          ball.vy = -BALL_SPEED_Y;
+          score++;
+          blip();
+        }
+
+        // Miss: below the floor. A life gone; 0 lives → GAME_OVER.
+        if (ball.y - BALL_R > FIELD_H) {
+          lives--;
+          if (lives <= 0) { setState('GAME_OVER'); }
+          else serve();
+        }
+        break;
+      }
+
+      case 'PAUSED':
+        if (justPressed('pause')) setState('PLAYING');
+        break;
+
+      case 'GAME_OVER':
+        if (justPressed('primary')) { startRun(); setState('PLAYING'); }
+        break;
+    }
+  }
+
+  function gameRender(c, w, h, alpha) {
+    // Fit the virtual field into the view, centered, aspect preserved.
+    const s = Math.min(w / FIELD_W, h / FIELD_H) || 1;
+    const offX = (w - FIELD_W * s) / 2;
+    const offY = (h - FIELD_H * s) / 2;
+    c.save();
+    c.translate(offX, offY);
+    c.scale(s, s);
+
+    // Field
+    c.fillStyle = '#101623';
+    c.fillRect(0, 0, FIELD_W, FIELD_H);
+    c.strokeStyle = '#2b3750';
+    c.strokeRect(0.5, 0.5, FIELD_W - 1, FIELD_H - 1);
+
+    // Interpolated draw: lerp(prev, current, alpha) — never draw raw sim state.
+    const px = paddle.prevX + (paddle.x - paddle.prevX) * alpha;
+    c.fillStyle = '#3ddc84';
+    c.fillRect(px - PADDLE_W / 2, PADDLE_Y, PADDLE_W, PADDLE_H);
+
+    if (ball.active) {
+      const bx = ball.prevX + (ball.x - ball.prevX) * alpha;
+      const by = ball.prevY + (ball.y - ball.prevY) * alpha;
+      c.fillStyle = '#e6edf3';
+      c.beginPath(); c.arc(bx, by, BALL_R, 0, Math.PI * 2); c.fill();
+    }
+
+    // HUD
+    c.fillStyle = '#8b949e';
+    c.font = '10px monospace';
+    c.textAlign = 'left';
+    c.fillText('score ' + score, 8, 14);
+    c.textAlign = 'right';
+    c.fillText('lives ' + lives, FIELD_W - 8, 14);
+
+    c.textAlign = 'center';
+    if (state === 'MENU') {
+      c.fillStyle = '#e6edf3';
+      c.font = 'bold 18px system-ui, sans-serif';
+      c.fillText(GAME_TITLE, FIELD_W / 2, FIELD_H / 2 - 24);
+      c.font = '10px monospace';
+      c.fillStyle = '#8b949e';
+      c.fillText('primary (space/enter/tap) to serve', FIELD_W / 2, FIELD_H / 2);
+      c.fillText('left/right to move · pause (P/esc)', FIELD_W / 2, FIELD_H / 2 + 16);
+    } else if (state === 'PAUSED') {
+      c.fillStyle = '#e6edf3';
+      c.font = 'bold 16px system-ui, sans-serif';
+      c.fillText('PAUSED', FIELD_W / 2, FIELD_H / 2);
+    } else if (state === 'GAME_OVER') {
+      c.fillStyle = '#e6edf3';
+      c.font = 'bold 16px system-ui, sans-serif';
+      c.fillText('GAME OVER', FIELD_W / 2, FIELD_H / 2 - 8);
+      c.font = '10px monospace';
+      c.fillStyle = '#8b949e';
+      c.fillText('final score ' + score + ' · primary to restart', FIELD_W / 2, FIELD_H / 2 + 12);
+    }
+    c.restore();
+  }
+
+  // Snapshot exposure — the fields downstream verifiers assert on. They must
+  // MOVE during play: a snapshot that freezes while the state machine advances
+  // is the exact bug class the journey verifier hunts.
+  if (window.__test) {
+    window.__test.expose(() => ({
+      score,
+      lives,
+      ticks: runTicks,
+      paddle: { x: paddle.x },
+      ball: { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy },
+      entityCount: 1 + (ball.active ? 1 : 0), // paddle + live ball
+    }));
+  }
+
+  /* ===== END GAME ========================================================= */
+
+  // Boot. No assets to load, so LOADING hands off to MENU immediately; a game
+  // that loads assets stays in LOADING until they are ready (via setState).
+  gameInit();
+  setState('MENU');
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

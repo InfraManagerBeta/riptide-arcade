@@ -1,0 +1,9 @@
+{
+  "maxSingleFileBytes": 65536,
+  "maxTotalDirBytes": 131072,
+  "glb": {
+    "maxTriangles": 15000,
+    "maxFileBytes": 1048576,
+    "requireRigCheck": true
+  }
+}
