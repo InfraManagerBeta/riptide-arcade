@@ -17,6 +17,7 @@ import {
   parseGLB,
   countRenderedTriangles,
   validateDocument,
+  validateShape,
   validateFile,
 } from './validate-mascots.mjs';
 
@@ -43,6 +44,44 @@ function buildGLB(json) {
   chunkHeader.write('JSON', 4, 'ascii');
 
   return Buffer.concat([header, chunkHeader, paddedJson]);
+}
+
+/**
+ * Low-level GLB builder that allows constructing malformed containers on
+ * purpose: each entry in `chunks` gets an 8-byte chunk header (4-byte
+ * length + 4-byte type) followed by `data`, where the length field can be
+ * independently overridden from the actual byte count of `data` via
+ * `lengthOverride`. `extraTrailingBytes`, when given, is appended raw after
+ * all chunks (unaccounted-for trailing bytes). `declaredLengthOverride`
+ * overrides the top-level header's declared total length; by default it is
+ * the actual total byte count.
+ *
+ * @param {{chunks: {type:string, data:Buffer, lengthOverride?:number}[], extraTrailingBytes?: Buffer, declaredLengthOverride?: number}} opts
+ * @returns {Buffer}
+ */
+function buildGLBRaw({ chunks, extraTrailingBytes, declaredLengthOverride }) {
+  const chunkBuffers = chunks.map(({ type, data, lengthOverride }) => {
+    const chunkHeader = Buffer.alloc(8);
+    chunkHeader.writeUInt32LE(lengthOverride !== undefined ? lengthOverride : data.length, 0);
+    chunkHeader.write(type, 4, 'ascii');
+    return Buffer.concat([chunkHeader, data]);
+  });
+  const body = Buffer.concat([...chunkBuffers, ...(extraTrailingBytes ? [extraTrailingBytes] : [])]);
+  const totalLength = declaredLengthOverride !== undefined ? declaredLengthOverride : 12 + body.length;
+
+  const header = Buffer.alloc(12);
+  header.write('glTF', 0, 'ascii');
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(totalLength, 8);
+
+  return Buffer.concat([header, body]);
+}
+
+/** A padded (multiple-of-4) JSON chunk data buffer for a glTF document, padded with ASCII spaces (0x20) per the GLB spec. */
+function jsonChunkData(json) {
+  const jsonBuffer = Buffer.from(JSON.stringify(json), 'utf8');
+  const padding = (4 - (jsonBuffer.length % 4)) % 4;
+  return Buffer.concat([jsonBuffer, Buffer.alloc(padding, 0x20)]);
 }
 
 /** A minimal, otherwise-passing glTF document: 1 skin, 1 animation, one
@@ -396,7 +435,13 @@ test('out-of-range indices accessor index fails instead of throwing uncaught', (
   doc.meshes[0].primitives[0].indices = 99; // no accessor 99
   const result = validateDocument(doc);
   assert.equal(result.pass, false);
-  assert.ok(result.errors.some((e) => e.includes('could not compute triangle count')));
+  // Round 3: this is now caught by the shape gate (validateShape), before
+  // triangle counting is ever attempted, rather than surfacing as a
+  // "could not compute triangle count" error from countRenderedTriangles.
+  assert.ok(
+    result.errors.some((e) => e.includes('primitives[0].indices') && e.includes('accessors')),
+    `expected an out-of-range indices shape error, got: ${JSON.stringify(result.errors)}`
+  );
 });
 
 test('out-of-range node.mesh index fails instead of throwing uncaught', () => {
@@ -404,7 +449,11 @@ test('out-of-range node.mesh index fails instead of throwing uncaught', () => {
   doc.nodes = [{ mesh: 99 }];
   const result = validateDocument(doc);
   assert.equal(result.pass, false);
-  assert.ok(result.errors.some((e) => e.includes('could not compute triangle count')));
+  // Round 3: caught by the shape gate before triangle counting.
+  assert.ok(
+    result.errors.some((e) => e.includes('nodes[0].mesh') && e.includes('meshes')),
+    `expected an out-of-range node.mesh shape error, got: ${JSON.stringify(result.errors)}`
+  );
 });
 
 test('manager repro: NaN/negative/string-mode files all FAIL, not PASS', () => {
@@ -633,4 +682,268 @@ test('a skin with a non-empty joints array still passes (no other new gates)', (
   doc.skins = [{ joints: [0, 1, 2] }];
   const result = validateDocument(doc);
   assert.equal(result.pass, true);
+});
+
+// ---------------------------------------------------------------------------
+// Round 3 CRUCIAL: whole-document shape validation (validateShape), closing
+// the triangle-gate bypass through a non-array `meshes` and the reviewer's
+// advisories in the same class (nodes-as-string, animations:[null],
+// primitives:[], missing attributes).
+// ---------------------------------------------------------------------------
+
+test('validateShape returns no errors for the well-formed base document', () => {
+  assert.deepEqual(validateShape(baseDoc()), []);
+});
+
+test('round-3 CRUCIAL repro: a non-array object `meshes` no longer bypasses the triangle gate', () => {
+  // Exact shape from the manager's repro: an object-keyed `meshes` (not an
+  // array), referenced by no node, whose one mesh has 90000/3 = 30000
+  // triangles — today (pre-fix) countRenderedTriangles's `meshes.length` is
+  // `undefined`, the "unreferenced mesh" loop never runs, and this reports
+  // 0 triangles / PASS. It must now FAIL, before triangle counting even
+  // starts.
+  const doc = {
+    asset: { version: '2.0' },
+    skins: [{ joints: [0] }],
+    animations: [{ channels: [], samplers: [] }],
+    nodes: [{}],
+    accessors: [{ count: 90000 }],
+    meshes: { '0': { primitives: [{ attributes: { POSITION: 0 } }] } },
+  };
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false, `expected FAIL, got: ${JSON.stringify(result)}`);
+  assert.equal(result.triangles, 0, 'shape gate must reject before any triangle counting is attempted');
+  assert.ok(
+    result.errors.some((e) => e.includes('`meshes`') && e.includes('array')),
+    `expected a \`meshes\` shape error, got: ${JSON.stringify(result.errors)}`
+  );
+});
+
+test('round-3 CRUCIAL repro end-to-end via validateFile / the CLI path on a real synthetic GLB', () => {
+  const doc = {
+    asset: { version: '2.0' },
+    skins: [{ joints: [0] }],
+    animations: [{ channels: [], samplers: [] }],
+    nodes: [{}],
+    accessors: [{ count: 90000 }],
+    meshes: { '0': { primitives: [{ attributes: { POSITION: 0 } }] } },
+  };
+  const { dir, file } = tmpFile(buildGLB(doc));
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, false, `expected FAIL, got: ${JSON.stringify(result)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const SHAPE_ARRAY_KEYS = ['nodes', 'meshes', 'accessors', 'skins', 'animations'];
+
+for (const key of SHAPE_ARRAY_KEYS) {
+  for (const [label, badValue] of [
+    ['an object', { '0': {} }],
+    ['a string', 'not-an-array'],
+  ]) {
+    test(`\`${key}\` as ${label} fails shape validation instead of bypassing the gate`, () => {
+      const doc = baseDoc();
+      doc[key] = badValue;
+      const shapeErrors = validateShape(doc);
+      assert.ok(
+        shapeErrors.some((e) => e.includes(`\`${key}\``) && e.includes('array')),
+        `expected a shape error naming \`${key}\`, got: ${JSON.stringify(shapeErrors)}`
+      );
+      const result = validateDocument(doc);
+      assert.equal(result.pass, false, `expected FAIL for ${key} = ${JSON.stringify(badValue)}`);
+      assert.deepEqual(result.errors, shapeErrors, 'validateDocument must surface the shape errors directly');
+    });
+  }
+}
+
+test('`animations: [null]` fails shape validation (each entry must be an object)', () => {
+  const doc = baseDoc();
+  doc.animations = [null];
+  const shapeErrors = validateShape(doc);
+  assert.ok(
+    shapeErrors.some((e) => e.includes('animations[0]')),
+    `expected an animations[0] shape error, got: ${JSON.stringify(shapeErrors)}`
+  );
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('an empty `primitives` array fails shape validation (the schema requires >= 1)', () => {
+  const doc = baseDoc();
+  doc.meshes[0].primitives = [];
+  const shapeErrors = validateShape(doc);
+  assert.ok(
+    shapeErrors.some((e) => e.includes('meshes[0].primitives')),
+    `expected a meshes[0].primitives shape error, got: ${JSON.stringify(shapeErrors)}`
+  );
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('a primitive with `attributes` missing entirely fails shape validation', () => {
+  const doc = baseDoc();
+  delete doc.meshes[0].primitives[0].attributes;
+  const shapeErrors = validateShape(doc);
+  assert.ok(
+    shapeErrors.some((e) => e.includes('attributes')),
+    `expected an attributes shape error, got: ${JSON.stringify(shapeErrors)}`
+  );
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('a primitive whose `attributes` is a non-object (e.g. a string) fails shape validation', () => {
+  const doc = baseDoc();
+  doc.meshes[0].primitives[0].attributes = 'nope';
+  const shapeErrors = validateShape(doc);
+  assert.ok(shapeErrors.some((e) => e.includes('attributes')));
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('an out-of-range `attributes.POSITION` index fails shape validation', () => {
+  const doc = baseDoc();
+  doc.meshes[0].primitives[0].attributes.POSITION = 99;
+  const shapeErrors = validateShape(doc);
+  assert.ok(shapeErrors.some((e) => e.includes('attributes.POSITION')));
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('a skin `joints` entry that is not a non-negative integer fails shape validation', () => {
+  const doc = baseDoc();
+  doc.skins = [{ joints: [0, -1, 'x'] }];
+  const shapeErrors = validateShape(doc);
+  assert.ok(shapeErrors.some((e) => e.includes('joints[1]')));
+  assert.ok(shapeErrors.some((e) => e.includes('joints[2]')));
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+// ---------------------------------------------------------------------------
+// Round 3: full multi-chunk GLB container walking (not just the JSON chunk).
+// ---------------------------------------------------------------------------
+
+test('rejects a BIN chunk whose declared length wildly overflows the file (advisory d)', () => {
+  const doc = baseDoc();
+  const buffer = buildGLBRaw({
+    chunks: [
+      { type: 'JSON', data: jsonChunkData(doc) },
+      // Claims 1 MiB of BIN payload but only 16 real bytes actually follow.
+      { type: 'BIN\0', data: Buffer.alloc(16, 0), lengthOverride: 1024 * 1024 },
+    ],
+  });
+  assert.throws(() => parseGLB(buffer), /malformed|truncated/i);
+
+  const { dir, file } = tmpFile(buffer);
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a BIN chunk whose declared length undershoots the actual remaining bytes (untiled leftover)', () => {
+  const doc = baseDoc();
+  const binData = Buffer.alloc(100, 0); // 100 real bytes actually present
+  const buffer = buildGLBRaw({
+    chunks: [
+      { type: 'JSON', data: jsonChunkData(doc) },
+      // Declares only 96 bytes, but 100 real bytes follow -> 4 leftover
+      // bytes that don't tile to the declared total length.
+      { type: 'BIN\0', data: binData, lengthOverride: 96 },
+    ],
+  });
+  assert.throws(() => parseGLB(buffer), /malformed|truncated/i);
+
+  const { dir, file } = tmpFile(buffer);
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a BIN chunk whose declared length is not a multiple of 4', () => {
+  const doc = baseDoc();
+  const buffer = buildGLBRaw({
+    chunks: [
+      { type: 'JSON', data: jsonChunkData(doc) },
+      { type: 'BIN\0', data: Buffer.alloc(10, 0) }, // 10 is not a multiple of 4
+    ],
+  });
+  assert.throws(() => parseGLB(buffer), /multiple of 4/);
+});
+
+for (const garbageLength of [4, 8]) {
+  test(`rejects ${garbageLength} bytes of trailing garbage after the last chunk (advisory d)`, () => {
+    const doc = baseDoc();
+    // Non-zero, non-chunk-shaped bytes: as a little-endian chunk length this
+    // decodes to a huge, clearly out-of-bounds value, so it can't
+    // accidentally happen to parse as a valid trailing chunk.
+    const garbage = Buffer.from([0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef]).subarray(0, garbageLength);
+    const buffer = buildGLBRaw({
+      chunks: [{ type: 'JSON', data: jsonChunkData(doc) }],
+      extraTrailingBytes: garbage,
+    });
+    assert.throws(() => parseGLB(buffer), /malformed|truncated/i);
+
+    const { dir, file } = tmpFile(buffer);
+    try {
+      const result = validateFile(file);
+      assert.equal(result.pass, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Round 3: valid multi-chunk / formatting variations that must still PASS.
+// ---------------------------------------------------------------------------
+
+test('valid: a JSON chunk followed by a zero-padded BIN chunk still passes', () => {
+  const doc = baseDoc();
+  const buffer = buildGLBRaw({
+    chunks: [
+      { type: 'JSON', data: jsonChunkData(doc) },
+      { type: 'BIN\0', data: Buffer.alloc(16, 0) }, // already a multiple of 4
+    ],
+  });
+  const { dir, file } = tmpFile(buffer);
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, true, `expected PASS, got errors: ${JSON.stringify(result.errors)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('valid: pretty-printed JSON with trailing spaces still passes', () => {
+  const doc = baseDoc();
+  const prettyJson = `${JSON.stringify(doc, null, 2)}   `; // extra literal trailing spaces
+  const buffer = buildGLBFromRawJSONText(prettyJson);
+  const { dir, file } = tmpFile(buffer);
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, true, `expected PASS, got errors: ${JSON.stringify(result.errors)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('valid: the three real mascot assets still pass after the round-3 shape + container hardening', () => {
+  for (const name of ['crab.glb', 'gull.glb', 'buoy.glb']) {
+    const assetPath = path.join(REPO_ROOT, 'assets', 'mascots', name);
+    if (!existsSync(assetPath)) {
+      continue;
+    }
+    const result = validateFile(assetPath);
+    assert.equal(result.pass, true, `expected ${name} to PASS, got errors: ${JSON.stringify(result.errors)}`);
+  }
 });

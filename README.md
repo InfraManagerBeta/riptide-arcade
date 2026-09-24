@@ -95,25 +95,58 @@ unless:
   `indices` is present on the primitive, otherwise the `POSITION`
   accessor's `count`.
 
-Every value that feeds the triangle count is strictly validated, not just
-trusted: an accessor `count` must be a non-negative integer (a missing,
-non-numeric, or negative `count` fails the file instead of silently
-computing `NaN` or a too-low total), a primitive `mode`, when present, must
-be an integer `0`–`6` (a string like `"4"` or an out-of-range value fails
-the file rather than counting as `0` triangles), and mesh/accessor indices
-referenced from nodes and primitives must be integers within the bounds of
-their arrays.
+### Whole-document shape validation
 
-The validator also fails a file that is missing, unreadable, or malformed:
-bad GLB magic, wrong version, truncated, a first chunk that isn't the JSON
-chunk, a GLB whose header-declared total length doesn't match the actual
-file size, a chunk that extends past the declared length, a JSON chunk
-length that isn't a multiple of 4, or a JSON chunk that parses to something
-other than an object (`null`, a number, an array). A malformed file among
-several targets is reported as its own `FAIL` line — it does not abort
-validation of the other files. Beyond these container/shape checks and the
-spec's three conditions, the validator does not add any extra gates (e.g.
-no PBR checks).
+Before any counting happens, a single shape-validation pass
+(`validateShape()`) walks the whole parsed document and fails the file if
+any of the following is violated. This is the one gate that closes
+container/shape bypasses of the checks above (e.g. a non-array `meshes`
+silently reporting 0 triangles) — the counting code does not independently
+trust the raw JSON fields:
+
+- `nodes`, `meshes`, `accessors`, `skins`, and `animations`, when present,
+  must each be an **Array** whose every entry is a plain, non-null,
+  non-array object. Absent is fine (treated as empty); present-but-wrong
+  type (an object, a string, etc.) always fails the file.
+- Each mesh's `primitives` must be a **non-empty** Array of plain objects,
+  and each primitive's `attributes` must be a plain object.
+- Each skin's `joints` must be a non-empty Array of non-negative integers.
+- Each animation entry must be a plain object (nothing more is required of
+  animations by this validator).
+- `node.mesh`, `primitive.indices`, and `attributes.POSITION`, when
+  present, must be integers within the bounds of the array they index into
+  (an absent or malformed target array counts as zero-length, so any
+  reference into it fails).
+
+Beyond the shape gate, every value that feeds the triangle count is still
+strictly validated: an accessor `count` must be a non-negative integer (a
+missing, non-numeric, or negative `count` fails the file instead of
+silently computing `NaN` or a too-low total), and a primitive `mode`, when
+present, must be an integer `0`–`6` (a string like `"4"` or an out-of-range
+value fails the file rather than counting as `0` triangles).
+
+### Container validation
+
+The validator walks **every chunk** of the GLB container, not just the JSON
+chunk, and fails a file that is missing, unreadable, or malformed:
+
+- bad GLB magic, wrong version, or truncation;
+- the header's declared total length doesn't match the actual file size;
+- the first chunk isn't the JSON chunk;
+- any chunk's 8-byte header doesn't fully fit within the declared length;
+- any chunk's declared length isn't a multiple of 4;
+- any chunk's body extends past the declared total length; or
+- the chunks don't exactly tile the declared length — i.e. there are
+  leftover, unaccounted-for bytes after the last chunk (whether that's
+  literal trailing garbage, or a chunk whose declared length undershoots
+  the bytes actually present).
+
+A JSON chunk that parses to something other than an object (`null`, a
+number, an array) also fails the file. A malformed file among several
+targets is reported as its own `FAIL` line — it does not abort validation
+of the other files. Beyond these container/shape checks and the spec's
+three conditions, the validator does not add any extra gates (e.g. no PBR
+checks).
 
 ### Running it locally
 
