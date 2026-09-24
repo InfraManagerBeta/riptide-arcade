@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 import {
   parseGLB,
   countRenderedTriangles,
+  primitiveTriangleCount,
   validateDocument,
   validateShape,
   validateFile,
@@ -210,6 +211,159 @@ test('non-indexed triangle primitive uses POSITION accessor count', () => {
   doc.accessors[0].count = 30000; // POSITION count -> 30000/3 = 10000 triangles
   const triangles = countRenderedTriangles(doc);
   assert.equal(triangles, 10000);
+});
+
+// ---------------------------------------------------------------------------
+// Round 4 CRUCIAL fix: a triangle primitive with no POSITION attribute is a
+// valid glTF document (the schema does not require POSITION; clients skip
+// rendering such a primitive per spec §3.7.2.1). It must contribute 0
+// rendered triangles and must never FAIL the file on that basis alone,
+// whether or not `indices` is present. A malformed `mode`, or an
+// out-of-range `indices` index, still FAILs exactly as it does for any
+// other primitive.
+// ---------------------------------------------------------------------------
+
+test('manager repro: a POSITION-less NORMAL-only primitive no longer throws / FAILs the file', () => {
+  // Mirrors the exact manager repro at the CLI level: one skin, one
+  // animation, one rendered triangle (mesh 0, POSITION-bearing) plus a
+  // second mesh (mesh 1) whose sole primitive has only a NORMAL attribute
+  // and no `indices` at all. Before round 4 this threw "primitive has no
+  // indices and no POSITION attribute" and FAILed the whole file.
+  const doc = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0, 1, 2] }],
+    nodes: [{ name: 'joint' }, { mesh: 0 }, { mesh: 1 }],
+    meshes: [
+      { primitives: [{ attributes: { POSITION: 0 } }] }, // 3 verts, non-indexed -> 1 triangle
+      { primitives: [{ attributes: { NORMAL: 1 } }] }, // no POSITION -> 0 triangles, not an error
+    ],
+    skins: [{ joints: [0] }],
+    animations: [{ samplers: [{ input: 2, output: 3 }], channels: [{ sampler: 0, target: { node: 0, path: 'rotation' } }] }],
+    accessors: [
+      { componentType: 5126, count: 3, type: 'VEC3' }, // POSITION
+      { componentType: 5126, count: 3, type: 'VEC3' }, // NORMAL
+      { componentType: 5126, count: 2, type: 'SCALAR' }, // animation input
+      { componentType: 5126, count: 2, type: 'VEC4' }, // animation output
+    ],
+  };
+  const result = validateDocument(doc);
+  assert.equal(result.pass, true, `expected PASS, got errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.skins, 1);
+  assert.equal(result.animations, 1);
+  assert.equal(result.triangles, 1);
+  assert.deepEqual(result.errors, []);
+});
+
+test('manager repro end-to-end via validateFile / the CLI path on a real synthetic GLB', () => {
+  const bin = Buffer.concat([
+    Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer), // POSITION
+    Buffer.from(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]).buffer), // NORMAL
+    Buffer.from(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]).buffer), // inverseBindMatrices
+    Buffer.from(new Float32Array([0, 1]).buffer), // animation input
+    Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1]).buffer), // animation output
+  ]);
+  const bv = (o, l) => ({ buffer: 0, byteOffset: o, byteLength: l });
+  const doc = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0, 1, 2] }],
+    nodes: [{ name: 'joint' }, { mesh: 0 }, { mesh: 1 }],
+    meshes: [
+      { primitives: [{ attributes: { POSITION: 0 } }] },
+      { primitives: [{ attributes: { NORMAL: 1 } }] },
+    ],
+    skins: [{ joints: [0], inverseBindMatrices: 2 }],
+    animations: [
+      { samplers: [{ input: 3, output: 4 }], channels: [{ sampler: 0, target: { node: 0, path: 'rotation' } }] },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 1, type: 'MAT4' },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [1] },
+      { bufferView: 4, componentType: 5126, count: 2, type: 'VEC4' },
+    ],
+    bufferViews: [bv(0, 36), bv(36, 36), bv(72, 64), bv(136, 8), bv(144, 32)],
+    buffers: [{ byteLength: 176 }],
+  };
+  const jsonBuffer = Buffer.from(JSON.stringify(doc), 'utf8');
+  const paddedJson = Buffer.concat([jsonBuffer, Buffer.alloc((4 - (jsonBuffer.length % 4)) % 4, 0x20)]);
+  const chunk = (type, data) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32LE(data.length, 0);
+    header.write(type, 4, 'latin1');
+    return Buffer.concat([header, data]);
+  };
+  const body = Buffer.concat([chunk('JSON', paddedJson), chunk('BIN\0', bin)]);
+  const header = Buffer.alloc(12);
+  header.write('glTF', 0);
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + body.length, 8);
+  const buffer = Buffer.concat([header, body]);
+
+  const { dir, file } = tmpFile(buffer);
+  try {
+    const result = validateFile(file);
+    assert.equal(result.pass, true, `expected PASS, got errors: ${JSON.stringify(result.errors)}`);
+    assert.equal(result.triangles, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('primitiveTriangleCount: no attributes.POSITION and no indices contributes 0, not a throw', () => {
+  const accessors = [{ count: 3, type: 'VEC3', componentType: 5126 }];
+  assert.equal(primitiveTriangleCount({ attributes: { NORMAL: 0 } }, accessors), 0);
+  assert.equal(primitiveTriangleCount({ attributes: {} }, accessors), 0);
+});
+
+test('a POSITION-less primitive with 90,000 in-bounds indices is counted as 0 triangles, not 30,000 (updates the pre-round-4 assumption that `indices` alone makes a primitive countable)', () => {
+  // Before round 4, `primitiveTriangleCount` counted `indices` whenever
+  // present, regardless of POSITION, so this would have reported 30000
+  // triangles (90000 / 3) and likely FAILed the 10,000 limit. Under decision
+  // A2 a POSITION-less primitive renders nothing, so this must count as 0.
+  const doc = baseDoc(); // mesh 0: 100 triangles, well within the limit
+  doc.meshes.push({
+    primitives: [{ attributes: {}, indices: 2, mode: 4 }], // no POSITION at all
+  });
+  doc.accessors.push({ count: 90000, type: 'SCALAR', componentType: 5125 }); // in-bounds indices accessor
+  // Mesh 1 is referenced by no node, so it is still counted once (per the
+  // "unreferenced mesh" rule) — at 0 triangles, not 30000.
+  const result = validateDocument(doc);
+  assert.equal(result.pass, true, `expected PASS, got errors: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.triangles, 100, 'the POSITION-less primitive must contribute 0, not 30000');
+});
+
+test('a POSITION-less primitive with out-of-range `indices` still fails shape validation', () => {
+  const doc = baseDoc();
+  doc.meshes[0].primitives[0] = { attributes: {}, indices: 99, mode: 4 }; // no POSITION, no accessor 99
+  const shapeErrors = validateShape(doc);
+  assert.ok(
+    shapeErrors.some((e) => e.includes('primitives[0].indices') && e.includes('accessors')),
+    `expected an out-of-range indices shape error, got: ${JSON.stringify(shapeErrors)}`
+  );
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+});
+
+test('a POSITION-less primitive with `mode: 7` still fails (invalid mode, independent of POSITION)', () => {
+  const doc = baseDoc();
+  doc.meshes[0].primitives[0] = { attributes: {}, mode: 7 }; // no POSITION, invalid mode
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+  assert.ok(
+    result.errors.some((e) => e.includes('could not compute triangle count')),
+    `expected a triangle-count error, got: ${JSON.stringify(result.errors)}`
+  );
+});
+
+test('a primitive WITH POSITION is still counted exactly as before (no regression)', () => {
+  // Unchanged control case: baseDoc()'s primitive has both POSITION and
+  // indices, and must still use the indices accessor's count as before.
+  const result = validateDocument(baseDoc());
+  assert.equal(result.triangles, 100);
+  assert.equal(result.pass, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -758,6 +912,34 @@ for (const key of SHAPE_ARRAY_KEYS) {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Round 4 cosmetic fix: a shape-validation FAIL must report the real
+// skins/animations counts when those fields ARE arrays (even though some
+// *other* field failed shape validation), and 'n/a' when they are not
+// arrays at all, instead of always printing 0/0.
+// ---------------------------------------------------------------------------
+
+test('a shape FAIL caused by a bad `meshes` still reports the real skins/animations counts', () => {
+  const doc = baseDoc();
+  doc.skins = [{ joints: [0] }, { joints: [1] }]; // 2 real skins
+  doc.animations = [{ channels: [], samplers: [] }]; // 1 real animation
+  doc.meshes = 'not-an-array'; // triggers the shape FAIL
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+  assert.equal(result.skins, 2, 'skins is a real array, so its real length must be reported, not 0');
+  assert.equal(result.animations, 1, 'animations is a real array, so its real length must be reported, not 0');
+});
+
+test('a shape FAIL where `skins`/`animations` themselves are not arrays reports "n/a", not a wrong number', () => {
+  const doc = baseDoc();
+  doc.skins = 'nope'; // not an array: no real count to report
+  doc.animations = 42; // not an array: no real count to report
+  const result = validateDocument(doc);
+  assert.equal(result.pass, false);
+  assert.equal(result.skins, 'n/a');
+  assert.equal(result.animations, 'n/a');
+});
 
 test('`animations: [null]` fails shape validation (each entry must be an object)', () => {
   const doc = baseDoc();

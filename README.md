@@ -94,6 +94,10 @@ unless:
   contribute `0`. `count` is the `indices` accessor's `count` when
   `indices` is present on the primitive, otherwise the `POSITION`
   accessor's `count`.
+- A primitive with **no `POSITION` attribute** contributes `0` rendered
+  triangles regardless of `mode` or `indices`, because the glTF 2.0 schema
+  does not require `POSITION` and clients skip rendering such a primitive —
+  it is a valid document, not a validator failure.
 
 ### Whole-document shape validation
 

@@ -21,6 +21,9 @@
 //     (TRIANGLE_FAN) contribute max(count - 2, 0); modes 0-3 (points/lines)
 //     contribute 0. `count` is the `indices` accessor's `count` when
 //     `indices` is present, otherwise the POSITION accessor's `count`.
+//   - A primitive with no `POSITION` attribute contributes 0 triangles,
+//     whether or not it has `indices`: the glTF 2.0 schema does not require
+//     `POSITION`, and clients skip rendering such a primitive (round 4).
 //
 // Shape validation (round 3, closing a triangle-gate bypass through a
 // non-array `meshes`): before any counting happens, `validateShape()` walks
@@ -361,6 +364,16 @@ export function validateShape(json) {
 /**
  * Triangle contribution of a single primitive, per decision A2.
  *
+ * The glTF 2.0 schema does not require a `POSITION` attribute on a
+ * primitive (spec §3.7.2.1); when it is absent, clients SHOULD skip
+ * rendering that primitive entirely. Under decision A2 ("rendered"
+ * triangles) that means a POSITION-less primitive always contributes 0
+ * triangles — whether or not it has `indices` — because there are no vertex
+ * positions to render, indexed or not. This is a valid document, not an
+ * error; bounds/shape validity of `indices` (when present) is still
+ * enforced up front by `validateShape()`, and a malformed `mode` still
+ * fails below regardless of whether `POSITION` is present.
+ *
  * @param {object} primitive
  * @param {object[]} accessors
  * @returns {number}
@@ -382,17 +395,22 @@ export function primitiveTriangleCount(primitive, accessors) {
     return 0;
   }
 
+  const attributes = primitive.attributes;
+  const hasPosition = attributes && attributes.POSITION !== undefined;
+  if (!hasPosition) {
+    // No POSITION -> nothing to render, regardless of `indices`. Not an
+    // error (round 4 CRUCIAL fix).
+    return 0;
+  }
+
   let accessorIndex;
   let sourceLabel;
   if (primitive.indices !== undefined) {
     accessorIndex = primitive.indices;
     sourceLabel = 'indices';
   } else {
-    accessorIndex = primitive.attributes && primitive.attributes.POSITION;
+    accessorIndex = attributes.POSITION;
     sourceLabel = 'POSITION';
-    if (accessorIndex === undefined) {
-      throw new Error('primitive has no indices and no POSITION attribute');
-    }
   }
 
   if (
@@ -500,13 +518,22 @@ export function countRenderedTriangles(json) {
  * (there is nothing safe to count from a document whose containers don't
  * have the shape the counting code assumes).
  *
+ * On a shape-validation failure, `skins`/`animations` report the real
+ * `.length` when `json.skins` / `json.animations` happen to be Arrays (even
+ * though some other part of the document failed shape validation), or the
+ * string `'n/a'` when that field itself isn't an Array (so there is no real
+ * count to report). `triangles` is always 0 in this case: shape validation
+ * failed before any triangle counting was attempted.
+ *
  * @param {object} json
- * @returns {{skins:number, animations:number, triangles:number, pass:boolean, errors:string[]}}
+ * @returns {{skins:number|string, animations:number|string, triangles:number, pass:boolean, errors:string[]}}
  */
 export function validateDocument(json) {
   const shapeErrors = validateShape(json);
   if (shapeErrors.length > 0) {
-    return { skins: 0, animations: 0, triangles: 0, pass: false, errors: shapeErrors };
+    const skins = Array.isArray(json.skins) ? json.skins.length : 'n/a';
+    const animations = Array.isArray(json.animations) ? json.animations.length : 'n/a';
+    return { skins, animations, triangles: 0, pass: false, errors: shapeErrors };
   }
 
   const skinsList = Array.isArray(json.skins) ? json.skins : [];
@@ -542,7 +569,7 @@ export function validateDocument(json) {
  * files are reported as a failure, never thrown.
  *
  * @param {string} filePath
- * @returns {{file:string, skins:number, animations:number, triangles:number, pass:boolean, errors:string[]}}
+ * @returns {{file:string, skins:number|string, animations:number|string, triangles:number, pass:boolean, errors:string[]}}
  */
 export function validateFile(filePath) {
   let buffer;
