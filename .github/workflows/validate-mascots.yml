@@ -12,6 +12,9 @@ on:
 jobs:
   validate-mascots:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '22']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,10 +22,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
 
       - name: Run validator test suite
-        run: node --test scripts/
+        run: node --test scripts/validate-mascots.test.mjs
 
       - name: Validate mascot GLBs
         run: node scripts/validate-mascots.mjs

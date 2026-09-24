@@ -1,6 +1,7 @@
 // scripts/validate-mascots.test.mjs
 //
-// Tests for scripts/validate-mascots.mjs, run with `node --test scripts/`.
+// Tests for scripts/validate-mascots.mjs, run with
+// `node --test scripts/validate-mascots.test.mjs`.
 // Builds synthetic GLB buffers in memory / in a tmp dir — no real mascot
 // assets are needed or used.
 

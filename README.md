@@ -62,13 +62,14 @@ Run the validator's own test suite (synthetic, in-memory/tmp-dir GLBs — no
 real assets required) with:
 
 ```sh
-node --test scripts/
+node --test scripts/validate-mascots.test.mjs
 ```
 
 ### CI
 
 [`.github/workflows/validate-mascots.yml`](.github/workflows/validate-mascots.yml)
-runs on every push and pull request: it runs `node --test scripts/` and then
+runs on every push and pull request, on a Node 20 and Node 22 matrix: it runs
+`node --test scripts/validate-mascots.test.mjs` and then
 `node scripts/validate-mascots.mjs` against the real assets. It is a
 standalone workflow independent of spec 001's substrate. Green means all
 three mascot assets pass.
