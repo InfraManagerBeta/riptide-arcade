@@ -1,0 +1,28 @@
+name: Validate mascots
+
+# Standalone workflow for spec 002 (mascot pack). Does not depend on spec
+# 001's substrate. Green means: the validator's own test suite passes, and
+# all three mascot GLBs (assets/mascots/{crab,gull,buoy}.glb) pass the
+# skins/animations/triangle-count gates.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate-mascots:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run validator test suite
+        run: node --test scripts/
+
+      - name: Validate mascot GLBs
+        run: node scripts/validate-mascots.mjs
