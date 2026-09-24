@@ -35,7 +35,9 @@ Each mascot went through the same four-stage Tripo task chain:
    (Tripo's anatomical/Mixamo-like biped skeleton — the auto-detected creature rig
    path on this API version does not reliably rig humanoid-posed meshes), `spec: tripo`,
    `out_format: glb`. Every mascot was posed and rigged as a two-legged, two-armed
-   biped (claws/wings standing in for arms), which the task brief explicitly allows.
+   biped (claws/wings standing in for arms); the spec requires only that each asset
+   be rigged and is silent on rig type, and a biped rig was chosen for the reasons
+   above (reliability of this rig path vs. the auto-detected creature path).
 4. **Retarget** — `animate_retarget` on the rig task, requesting `preset:biped:idle`
    with `out_format: glb`. Tripo names the resulting glTF animation clip `idle`
    automatically.
@@ -75,7 +77,7 @@ rigged, game-ready GLB mascots (`assets/mascots/crab.glb`, `gull.glb`,
 built-ins only, no npm packages) validator that parses each GLB and fails it
 unless:
 
-- it has **≥ 1 skin** (`skins.length >= 1`),
+- it has **≥ 1 skin** (`skins.length >= 1`), each with a non-empty `joints` array,
 - it has **≥ 1 animation** (`animations.length >= 1`), and
 - it has **≤ 10,000 rendered triangles**.
 
@@ -93,10 +95,25 @@ unless:
   `indices` is present on the primitive, otherwise the `POSITION`
   accessor's `count`.
 
-The validator also fails a file that is missing, unreadable, or malformed
-(bad GLB magic, wrong version, truncated, or a first chunk that isn't the
-JSON chunk) — it does not add any extra gates (e.g. no PBR checks) beyond
-the spec's three conditions.
+Every value that feeds the triangle count is strictly validated, not just
+trusted: an accessor `count` must be a non-negative integer (a missing,
+non-numeric, or negative `count` fails the file instead of silently
+computing `NaN` or a too-low total), a primitive `mode`, when present, must
+be an integer `0`–`6` (a string like `"4"` or an out-of-range value fails
+the file rather than counting as `0` triangles), and mesh/accessor indices
+referenced from nodes and primitives must be integers within the bounds of
+their arrays.
+
+The validator also fails a file that is missing, unreadable, or malformed:
+bad GLB magic, wrong version, truncated, a first chunk that isn't the JSON
+chunk, a GLB whose header-declared total length doesn't match the actual
+file size, a chunk that extends past the declared length, a JSON chunk
+length that isn't a multiple of 4, or a JSON chunk that parses to something
+other than an object (`null`, a number, an array). A malformed file among
+several targets is reported as its own `FAIL` line — it does not abort
+validation of the other files. Beyond these container/shape checks and the
+spec's three conditions, the validator does not add any extra gates (e.g.
+no PBR checks).
 
 ### Running it locally
 

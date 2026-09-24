@@ -74,7 +74,7 @@
     "triangle_rule": "Sum over every mesh-referencing node's primitives: TRIANGLES=indices/3, STRIP/FAN=indices-2, using indices count when indexed else POSITION count; a mesh with no referencing node counts once.",
     "materials": 1,
     "pbr": "pbrMetallicRoughness with baseColorTexture, metallicRoughnessTexture, and normalTexture all present",
-    "texture_resolution": "2048x2048 (one PNG baseColor + two JPEG maps)",
+    "texture_resolution": "2048x2048 (normal map is PNG; baseColor and metallicRoughness maps are JPEG)",
     "skin": "1 skin, 41 joints, mesh bound via JOINTS_0/WEIGHTS_0 with the node's skin index set"
   },
   "not_hand_modeled": true,

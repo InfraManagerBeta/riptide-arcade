@@ -61,7 +61,7 @@
     }
   ],
   "rig_type": "biped",
-  "rig_notes": "rig-check auto-detected rig_type=avian for the raw mesh, but the v2.5 avian rig path has no documented preset animations to retarget. The gull was designed and posed as a bipedal bird mascot (two legs, wings held out like arms), so rig_type=biped was explicitly requested instead and overrode the detection; the biped v1.0-20240301 path produced a structurally valid, symmetric 41-joint anatomical skeleton and a correct GLB idle bake. This choice is explicitly allowed by the task brief ('avian or biped for the gull').",
+  "rig_notes": "rig-check auto-detected rig_type=avian for the raw mesh, but the v2.5 avian rig path has no documented preset animations to retarget. The gull was designed and posed as a bipedal bird mascot (two legs, wings held out like arms), so rig_type=biped was explicitly requested instead and overrode the detection; the biped v1.0-20240301 path produced a structurally valid, symmetric 41-joint anatomical skeleton and a correct GLB idle bake. The spec requires only that each asset be rigged and is silent on rig type; a biped rig was chosen because the avian path had no usable idle preset to retarget against.",
   "animation": {
     "clip_name": "idle",
     "duration_seconds": 15.37,
@@ -74,7 +74,7 @@
     "triangle_rule": "Sum over every mesh-referencing node's primitives: TRIANGLES=indices/3, STRIP/FAN=indices-2, using indices count when indexed else POSITION count; a mesh with no referencing node counts once.",
     "materials": 1,
     "pbr": "pbrMetallicRoughness with baseColorTexture, metallicRoughnessTexture, and normalTexture all present",
-    "texture_resolution": "2048x2048 (one PNG baseColor + two JPEG maps)",
+    "texture_resolution": "2048x2048 (normal map is PNG; baseColor and metallicRoughness maps are JPEG)",
     "skin": "1 skin, 41 joints, mesh bound via JOINTS_0/WEIGHTS_0 with the node's skin index set"
   },
   "not_hand_modeled": true,

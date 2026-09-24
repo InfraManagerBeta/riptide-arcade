@@ -24,7 +24,7 @@
 //
 // Node 20+ built-ins only. No npm dependencies.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -73,6 +73,11 @@ export function parseGLB(data) {
       `truncated GLB: header declares total length ${declaredLength} but file is only ${buffer.length} bytes`
     );
   }
+  if (declaredLength !== buffer.length) {
+    throw new Error(
+      `malformed GLB: header declares total length ${declaredLength} but file is ${buffer.length} bytes (extra trailing data)`
+    );
+  }
 
   if (buffer.length < 20) {
     throw new Error(
@@ -86,22 +91,36 @@ export function parseGLB(data) {
     throw new Error(`first chunk is not JSON: got chunk type ${JSON.stringify(chunkType)}`);
   }
 
+  if (chunkLength % 4 !== 0) {
+    throw new Error(
+      `malformed GLB: JSON chunk length ${chunkLength} is not a multiple of 4`
+    );
+  }
+
   const chunkStart = 20;
   const chunkEnd = chunkStart + chunkLength;
-  if (chunkEnd > buffer.length) {
+  if (chunkEnd > declaredLength) {
     throw new Error(
       `truncated GLB: JSON chunk declares length ${chunkLength} but only ${
         buffer.length - chunkStart
-      } bytes remain`
+      } bytes remain within the declared GLB length`
     );
   }
 
   const jsonText = buffer.toString('utf8', chunkStart, chunkEnd);
+  let parsed;
   try {
-    return JSON.parse(jsonText);
+    parsed = JSON.parse(jsonText);
   } catch (err) {
     throw new Error(`malformed JSON chunk: ${err.message}`);
   }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const kind = parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed;
+    throw new Error(`malformed JSON chunk: expected a JSON object at the top level, got ${kind}`);
+  }
+
+  return parsed;
 }
 
 /**
@@ -112,40 +131,62 @@ export function parseGLB(data) {
  * @returns {number}
  */
 export function primitiveTriangleCount(primitive, accessors) {
-  const mode = primitive.mode === undefined ? MODE_TRIANGLES : primitive.mode;
+  let mode = primitive.mode;
+  if (mode === undefined) {
+    mode = MODE_TRIANGLES;
+  } else if (!Number.isInteger(mode) || mode < 0 || mode > 6) {
+    // glTF 2.0 only defines modes 0-6. Anything else (including non-numeric
+    // values like the string "4") is malformed, not silently ignorable.
+    throw new Error(
+      `primitive has invalid mode ${JSON.stringify(mode)} (must be an integer 0-6 when present)`
+    );
+  }
 
   if (mode < MODE_TRIANGLES) {
     // 0 POINTS, 1 LINES, 2 LINE_LOOP, 3 LINE_STRIP
     return 0;
   }
 
-  let count;
+  let accessorIndex;
+  let sourceLabel;
   if (primitive.indices !== undefined) {
-    const accessor = accessors[primitive.indices];
-    if (!accessor) {
-      throw new Error(`primitive references missing indices accessor ${primitive.indices}`);
-    }
-    count = accessor.count;
+    accessorIndex = primitive.indices;
+    sourceLabel = 'indices';
   } else {
-    const posIndex = primitive.attributes && primitive.attributes.POSITION;
-    if (posIndex === undefined) {
+    accessorIndex = primitive.attributes && primitive.attributes.POSITION;
+    sourceLabel = 'POSITION';
+    if (accessorIndex === undefined) {
       throw new Error('primitive has no indices and no POSITION attribute');
     }
-    const accessor = accessors[posIndex];
-    if (!accessor) {
-      throw new Error(`primitive references missing POSITION accessor ${posIndex}`);
-    }
-    count = accessor.count;
+  }
+
+  if (
+    !Number.isInteger(accessorIndex) ||
+    accessorIndex < 0 ||
+    accessorIndex >= accessors.length
+  ) {
+    throw new Error(
+      `primitive references out-of-range ${sourceLabel} accessor index ${JSON.stringify(accessorIndex)}`
+    );
+  }
+
+  const accessor = accessors[accessorIndex];
+  if (!accessor) {
+    throw new Error(`primitive references missing ${sourceLabel} accessor ${accessorIndex}`);
+  }
+
+  const count = accessor.count;
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(
+      `accessor ${accessorIndex} has invalid count ${JSON.stringify(count)} (must be a non-negative integer)`
+    );
   }
 
   if (mode === MODE_TRIANGLES) {
     return Math.floor(count / 3);
   }
-  if (mode === MODE_TRIANGLE_STRIP || mode === MODE_TRIANGLE_FAN) {
-    return Math.max(count - 2, 0);
-  }
-  // No other modes are defined by glTF 2.0 (0-6). Treat anything else as 0.
-  return 0;
+  // mode === MODE_TRIANGLE_STRIP || mode === MODE_TRIANGLE_FAN (validated above)
+  return Math.max(count - 2, 0);
 }
 
 /**
@@ -184,8 +225,12 @@ export function countRenderedTriangles(json) {
 
   for (const node of nodes) {
     if (node && node.mesh !== undefined) {
-      referenced.add(node.mesh);
-      total += meshTriangles(node.mesh);
+      const meshIndex = node.mesh;
+      if (!Number.isInteger(meshIndex) || meshIndex < 0 || meshIndex >= meshes.length) {
+        throw new Error(`node references out-of-range mesh index ${JSON.stringify(meshIndex)}`);
+      }
+      referenced.add(meshIndex);
+      total += meshTriangles(meshIndex);
     }
   }
 
@@ -193,6 +238,10 @@ export function countRenderedTriangles(json) {
     if (!referenced.has(i)) {
       total += meshTriangles(i);
     }
+  }
+
+  if (!Number.isFinite(total) || !Number.isInteger(total)) {
+    throw new Error(`computed rendered triangle total ${total} is not a finite integer`);
   }
 
   return total;
@@ -207,7 +256,8 @@ export function countRenderedTriangles(json) {
  * @returns {{skins:number, animations:number, triangles:number, pass:boolean, errors:string[]}}
  */
 export function validateDocument(json) {
-  const skins = Array.isArray(json.skins) ? json.skins.length : 0;
+  const skinsList = Array.isArray(json.skins) ? json.skins : [];
+  const skins = skinsList.length;
   const animations = Array.isArray(json.animations) ? json.animations.length : 0;
 
   const errors = [];
@@ -220,6 +270,16 @@ export function validateDocument(json) {
 
   if (skins < 1) {
     errors.push(`${skins} skins (need >= 1)`);
+  } else {
+    // A skin without joints is schema-invalid (malformed), not merely "weird".
+    const invalidSkinCount = skinsList.filter(
+      (skin) => !skin || !Array.isArray(skin.joints) || skin.joints.length === 0
+    ).length;
+    if (invalidSkinCount > 0) {
+      errors.push(
+        `${invalidSkinCount} skin(s) with a missing/empty joints array (each skin needs >= 1 joint)`
+      );
+    }
   }
   if (animations < 1) {
     errors.push(`${animations} animations (need >= 1)`);
@@ -302,10 +362,30 @@ export function runCLI(argv) {
   return passCount === results.length ? 0 : 1;
 }
 
-const isMainModule =
-  process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+/**
+ * Determine whether this module was invoked directly as the CLI entry
+ * point, robust to the entry path being a symlink (e.g. invoked as
+ * `node /some/symlink/validate-mascots.mjs`, where `import.meta.url` is
+ * resolved to the real file but `process.argv[1]` is not). Both paths are
+ * realpath'd before comparison so a symlinked invocation still counts as
+ * running the CLI, instead of silently doing nothing and exiting 0.
+ *
+ * @returns {boolean}
+ */
+function isRunAsCLI() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  try {
+    const scriptPath = realpathSync(fileURLToPath(import.meta.url));
+    const entryPath = realpathSync(path.resolve(process.argv[1]));
+    return scriptPath === entryPath;
+  } catch {
+    return false;
+  }
+}
 
-if (isMainModule) {
+if (isRunAsCLI()) {
   const exitCode = runCLI(process.argv.slice(2));
   process.exit(exitCode);
 }
