@@ -1,0 +1,83 @@
+{
+  "asset": "assets/mascots/gull.glb",
+  "mascot": "Seagull scout",
+  "description": "Lanky, alert, slightly unhinged seagull scout mascot.",
+  "tool": "Tripo3D (Tripo AI)",
+  "api": {
+    "base_url": "https://api.tripo3d.ai/v2/openapi",
+    "auth": "Bearer token read from the TRIPO_API_KEY environment variable only; never hard-coded or logged."
+  },
+  "generation_model_version": "v3.1-20260211",
+  "rig_model_version": "v1.0-20240301",
+  "prompt": "a lanky cartoon seagull scout mascot character, standing upright on two thin legs, feathered wings held straight out to the sides like arms in a T-pose, alert wide eyes, slightly unhinged manic grin, tall skinny cartoon build, white and grey feathers, orange beak and legs, full-body T-pose, legs apart and clearly visible, front facing, symmetric, no loose props attached to the body, clean topology, game-ready mascot character",
+  "generation_parameters": {
+    "type": "text_to_model",
+    "model_version": "v3.1-20260211",
+    "texture": true,
+    "pbr": true,
+    "texture_quality": "standard",
+    "geometry_quality": "standard",
+    "face_limit": 8500
+  },
+  "pipeline": [
+    {
+      "step": 1,
+      "stage": "generate",
+      "task_type": "text_to_model",
+      "task_id": "490fc26b-3622-4a50-b32f-9c224fb28a9a",
+      "credits_consumed": 20
+    },
+    {
+      "step": 2,
+      "stage": "prerigcheck",
+      "task_type": "animate_prerigcheck",
+      "task_id": "68058433-43e3-4043-be2d-81485164a705",
+      "credits_consumed": 0,
+      "result": { "riggable": true, "detected_rig_type": "avian" }
+    },
+    {
+      "step": 3,
+      "stage": "rig",
+      "task_type": "animate_rig",
+      "task_id": "68377f52-c7b6-4546-becd-60492dc3356d",
+      "credits_consumed": 25,
+      "parameters": {
+        "model_version": "v1.0-20240301",
+        "rig_type": "biped",
+        "spec": "tripo",
+        "out_format": "glb"
+      }
+    },
+    {
+      "step": 4,
+      "stage": "retarget idle animation",
+      "task_type": "animate_retarget",
+      "task_id": "1ca41e9e-c25e-4e75-9c4f-0505ba8c36cc",
+      "credits_consumed": 10,
+      "parameters": {
+        "animations": ["preset:biped:idle"],
+        "out_format": "glb"
+      }
+    }
+  ],
+  "rig_type": "biped",
+  "rig_notes": "rig-check auto-detected rig_type=avian for the raw mesh, but the v2.5 avian rig path has no documented preset animations to retarget. The gull was designed and posed as a bipedal bird mascot (two legs, wings held out like arms), so rig_type=biped was explicitly requested instead and overrode the detection; the biped v1.0-20240301 path produced a structurally valid, symmetric 41-joint anatomical skeleton and a correct GLB idle bake. This choice is explicitly allowed by the task brief ('avian or biped for the gull').",
+  "animation": {
+    "clip_name": "idle",
+    "duration_seconds": 15.37,
+    "channel_count": 123,
+    "bones_animated": 41,
+    "loop_verification": "Computed world-space joint positions via forward kinematics at t=0 and t=duration from the sampled TRS tracks; max bone-position delta between the first and last frame across all named bones was 0.001758 model units (<0.002), i.e. the pose at the end of the clip is effectively identical to the start, so it loops without a visible pop."
+  },
+  "mesh": {
+    "rendered_triangles": 8160,
+    "triangle_rule": "Sum over every mesh-referencing node's primitives: TRIANGLES=indices/3, STRIP/FAN=indices-2, using indices count when indexed else POSITION count; a mesh with no referencing node counts once.",
+    "materials": 1,
+    "pbr": "pbrMetallicRoughness with baseColorTexture, metallicRoughnessTexture, and normalTexture all present",
+    "texture_resolution": "2048x2048 (one PNG baseColor + two JPEG maps)",
+    "skin": "1 skin, 41 joints, mesh bound via JOINTS_0/WEIGHTS_0 with the node's skin index set"
+  },
+  "not_hand_modeled": true,
+  "not_from_asset_library": true,
+  "generated_at": "2026-09-24"
+}

@@ -1,0 +1,83 @@
+{
+  "asset": "assets/mascots/crab.glb",
+  "mascot": "Crab bruiser",
+  "description": "Squat, heavy-clawed, cartoon-menacing crab warrior mascot.",
+  "tool": "Tripo3D (Tripo AI)",
+  "api": {
+    "base_url": "https://api.tripo3d.ai/v2/openapi",
+    "auth": "Bearer token read from the TRIPO_API_KEY environment variable only; never hard-coded or logged."
+  },
+  "generation_model_version": "v3.1-20260211",
+  "rig_model_version": "v1.0-20240301",
+  "prompt": "a stocky cartoon crab warrior mascot character, standing upright on two thick legs, two oversized heavy claws instead of arms held straight out to the sides in a T-pose, squat heavy cartoon-menacing build, thick red-orange shell armor, small angry eyes, full-body T-pose, legs apart and clearly visible, front facing, symmetric, no loose props attached to the body, clean topology, game-ready mascot character",
+  "generation_parameters": {
+    "type": "text_to_model",
+    "model_version": "v3.1-20260211",
+    "texture": true,
+    "pbr": true,
+    "texture_quality": "standard",
+    "geometry_quality": "standard",
+    "face_limit": 8500
+  },
+  "pipeline": [
+    {
+      "step": 1,
+      "stage": "generate",
+      "task_type": "text_to_model",
+      "task_id": "7cd77c0f-2385-4502-8874-37432293245f",
+      "credits_consumed": 20
+    },
+    {
+      "step": 2,
+      "stage": "prerigcheck",
+      "task_type": "animate_prerigcheck",
+      "task_id": "5e74e64f-c7f6-4d15-b760-52de280e8dff",
+      "credits_consumed": 0,
+      "result": { "riggable": true, "detected_rig_type": "biped" }
+    },
+    {
+      "step": 3,
+      "stage": "rig",
+      "task_type": "animate_rig",
+      "task_id": "46618ae2-2bce-46e8-ab4f-8fb7d608c3c8",
+      "credits_consumed": 25,
+      "parameters": {
+        "model_version": "v1.0-20240301",
+        "rig_type": "biped",
+        "spec": "tripo",
+        "out_format": "glb"
+      }
+    },
+    {
+      "step": 4,
+      "stage": "retarget idle animation",
+      "task_type": "animate_retarget",
+      "task_id": "5d440230-b101-42f3-8ca0-f4e5beaadcda",
+      "credits_consumed": 10,
+      "parameters": {
+        "animations": ["preset:biped:idle"],
+        "out_format": "glb"
+      }
+    }
+  ],
+  "rig_type": "biped",
+  "rig_notes": "Rigged with the v1.0-20240301 anatomical (Mixamo-like) biped skeleton, spec=tripo bone naming, 41 joints, 16 paired left/right limb bones (Clavicle/Upperarm/Forearm/Hand, Thigh/Calf/Foot, plus twist bones). Chosen because rig-check independently detected rig_type=biped for this model and the v1.0 biped path produced a structurally valid, symmetric skeleton with a correct GLB animation bake on this account (verified below) -- the crab is posed as a bipedal crab-warrior mascot (two legs, two claw-arms) rather than a true multi-legged crustacean rig.",
+  "animation": {
+    "clip_name": "idle",
+    "duration_seconds": 15.37,
+    "channel_count": 123,
+    "bones_animated": 41,
+    "loop_verification": "Computed world-space joint positions via forward kinematics at t=0 and t=duration from the sampled TRS tracks; max bone-position delta between the first and last frame across all named bones was 0.000996 model units (<0.001), i.e. the pose at the end of the clip is effectively identical to the start, so it loops without a visible pop."
+  },
+  "mesh": {
+    "rendered_triangles": 8458,
+    "triangle_rule": "Sum over every mesh-referencing node's primitives: TRIANGLES=indices/3, STRIP/FAN=indices-2, using indices count when indexed else POSITION count; a mesh with no referencing node counts once.",
+    "materials": 1,
+    "pbr": "pbrMetallicRoughness with baseColorTexture, metallicRoughnessTexture, and normalTexture all present",
+    "texture_resolution": "2048x2048 (one PNG baseColor + two JPEG maps)",
+    "skin": "1 skin, 41 joints, mesh bound via JOINTS_0/WEIGHTS_0 with the node's skin index set"
+  },
+  "not_hand_modeled": true,
+  "not_from_asset_library": true,
+  "generated_at": "2026-09-24"
+}
