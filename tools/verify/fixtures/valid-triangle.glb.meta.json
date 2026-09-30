@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "tool": "make-fixtures.js (hand-authored minimal glTF, no generative tool)",
+    "prompt": "single triangle, minimal valid GLB fixture (happy path)",
+    "model": "n/a — procedurally generated, not model-generated"
+  },
+  "declaredTriangles": 1,
+  "rigStatus": "clean"
+}

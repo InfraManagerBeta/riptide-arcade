@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "tool": "make-fixtures.js (hand-authored minimal glTF, no generative tool)",
+    "prompt": "2-triangle fixture with a sidecar reporting a failed rig check",
+    "model": "n/a — procedurally generated, not model-generated"
+  },
+  "declaredTriangles": 2,
+  "rigStatus": "dirty"
+}

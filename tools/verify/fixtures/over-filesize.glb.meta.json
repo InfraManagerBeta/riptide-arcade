@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "tool": "make-fixtures.js (hand-authored minimal glTF, no generative tool)",
+    "prompt": "1-triangle fixture padded with a filler BIN chunk to exceed a byte budget",
+    "model": "n/a — procedurally generated, not model-generated"
+  },
+  "declaredTriangles": 1,
+  "rigStatus": "clean"
+}

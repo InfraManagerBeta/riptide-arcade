@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "tool": "make-fixtures.js (hand-authored minimal glTF, no generative tool)",
+    "prompt": "10-triangle fixture whose sidecar lies about the triangle count",
+    "model": "n/a — procedurally generated, not model-generated"
+  },
+  "declaredTriangles": 500,
+  "rigStatus": "clean"
+}
