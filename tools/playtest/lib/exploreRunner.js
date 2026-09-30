@@ -89,8 +89,13 @@ async function runExplore({ page, capture, seed, steps, intervalMin, intervalMax
     statesVisited: capture.statesVisited,
     reachedPlaying: capture.statesVisited.includes('PLAYING'),
     durationMs: capture.durationMs(),
+    playSeconds: capture.playSeconds,
     fpsSeries,
-    screenshots: { transitions: capture.transitionShots, periodic: capture.periodicShots },
+    screenshots: {
+      transitions: capture.transitionShots,
+      periodic: capture.periodicShots,
+      periodicPlaySeconds: capture.periodicShotsPlaySeconds,
+    },
     finalSnapshot,
     errors,
   };
