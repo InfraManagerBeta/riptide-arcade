@@ -13,6 +13,25 @@ The substrate — template, verifiers, playtest harness, regression suite, and t
 spec template — is itself the first task: [`specs/001-init-scaffold.md`](specs/001-init-scaffold.md).
 Until it merges, this repository is just that spec.
 
+## Live preview
+
+The three mascots can be viewed in a browser at
+**<https://inframanagerbeta.github.io/riptide-arcade/preview/>** —
+[`preview/index.html`](preview/index.html) is a single static page (pinned-CDN
+[`<model-viewer>`](https://modelviewer.dev/), no build step) showing each mascot with
+orbit controls and its looping `idle` animation.
+
+To view it locally, serve the repository root over HTTP and open `/preview/`:
+
+```sh
+npx -y http-server . -p 8080   # then open http://localhost:8080/preview/
+# or
+python3 -m http.server 8080    # then open http://localhost:8080/preview/
+```
+
+Opening the file directly via `file://` won't work — browsers block the GLB
+fetches, so the models never load.
+
 ## Mascot generation pipeline
 
 The three mascots in [`assets/mascots/`](assets/mascots/) — `crab.glb`, `gull.glb`,
