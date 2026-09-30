@@ -222,12 +222,15 @@
   // ---------------------------------------------------------------------------
   // Fixed-timestep simulation core
   // ---------------------------------------------------------------------------
-  let totalTicks = 0; // fixed steps since load — the ONLY clock the sim may read
+  // RULE: totalTicks counts EVERY fixed step since load, including live rAF
+  // frames — so it depends on wall-clock load timing. Deterministic game state
+  // must derive from a play-scoped counter instead (see demoTicks in GAME).
+  let totalTicks = 0;
 
   function update(dt) {
     // RULE: update() must be genuinely time-independent. NEVER read Date.now()
     // or performance.now() in here or in anything it calls — time-derived
-    // effects use the tick counter (totalTicks * FIXED_DT). __test.tick() and
+    // effects use a tick counter (ticks * FIXED_DT). __test.tick() and
     // the rAF loop both drive THIS function; it is the single sim entry point.
     //
     // RULE: updateContinuousAudio() runs unconditionally, BEFORE any
@@ -316,16 +319,30 @@
    * ===== GAME ================================================================
    * Everything below is the part a game replaces. The template's placeholder
    * "game" only proves the shell is alive: it shows the title, the current
-   * state name, and a moving object, and walks MENU ⇄ PLAYING ⇄ PAUSED.
+   * state name, and a moving object, and walks the FULL state graph —
+   * MENU → PLAYING ⇄ PAUSED, a bounded demo round ending in GAME_OVER, and
+   * restart — so a bare copy of this file passes the repo's own verifiers.
    * ======================================================================== */
 
   // Placeholder entity. prev* fields exist so render can interpolate.
   const orb = { x: 0, y: 0, prevX: 0, prevY: 0 };
 
+  // RULE: the demo's clock. Sim state must derive from a counter that advances
+  // ONLY while PLAYING — never from totalTicks, which also counts live rAF
+  // frames, so anything derived from it depends on wall-clock load timing and
+  // fails the determinism verifier.
+  let demoTicks = 0;
+  const DEMO_ROUND_TICKS = 600; // the demo round ends unattended (~10s) so
+                                // PLAYING → GAME_OVER → restart stays verifiable
+
   function gameInit() {
     orb.x = orb.prevX = viewW / 2;
     orb.y = orb.prevY = viewH / 2;
   }
+
+  // Starting/restarting a run resets the run's own state — a restart that
+  // carries stale run state across is the classic bug the regression suite hunts.
+  function startDemoRun() { demoTicks = 0; }
 
   // Per-state hooks — the ONLY places to run enter/exit logic.
   function onStateEnter(next) { /* placeholder: nothing to set up */ }
@@ -336,27 +353,39 @@
   function updateContinuousAudio() { /* placeholder: no continuous sounds */ }
 
   function gameUpdate(dt) {
-    // Placeholder motion — driven by totalTicks, never wall-clock time; damped
-    // under REDUCED_MOTION as every game must do for non-essential motion.
-    const speed = REDUCED_MOTION ? 0.2 : 1;
-    const t = totalTicks * FIXED_DT * speed;
-    orb.prevX = orb.x; orb.prevY = orb.y;
-    orb.x = viewW / 2 + Math.cos(t * 1.7) * Math.min(viewW, viewH) * 0.25;
-    orb.y = viewH / 2 + Math.sin(t * 2.3) * Math.min(viewW, viewH) * 0.18;
-
     // All transitions below go through setState() — never assign `state`.
     switch (state) {
       case 'MENU':
-        if (justPressed('primary')) setState('PLAYING');
+        if (justPressed('primary')) { startDemoRun(); setState('PLAYING'); }
         break;
-      case 'PLAYING':
-        if (justPressed('pause')) setState('PAUSED');
+
+      case 'PLAYING': {
+        if (justPressed('pause')) { setState('PAUSED'); break; }
+
+        // RULE: the sim advances ONLY here, inside the PLAYING branch — motion
+        // in any other state (or outside this switch) breaks the journey
+        // verifier's PAUSED freeze and drifts in MENU/GAME_OVER.
+        demoTicks++;
+        // Placeholder motion — driven by demoTicks (play-scoped, deterministic),
+        // never wall-clock time or totalTicks; damped under REDUCED_MOTION as
+        // every game must do for non-essential motion.
+        const speed = REDUCED_MOTION ? 0.2 : 1;
+        const t = demoTicks * FIXED_DT * speed;
+        orb.prevX = orb.x; orb.prevY = orb.y;
+        orb.x = viewW / 2 + Math.cos(t * 1.7) * Math.min(viewW, viewH) * 0.25;
+        orb.y = viewH / 2 + Math.sin(t * 2.3) * Math.min(viewW, viewH) * 0.18;
+
+        // Demo round is bounded: end unattended so GAME_OVER is reachable.
+        if (demoTicks >= DEMO_ROUND_TICKS) setState('GAME_OVER');
         break;
+      }
+
       case 'PAUSED':
         if (justPressed('pause')) setState('PLAYING');
         break;
+
       case 'GAME_OVER':
-        if (justPressed('primary')) setState('PLAYING');
+        if (justPressed('primary')) { startDemoRun(); setState('PLAYING'); }
         break;
     }
   }
