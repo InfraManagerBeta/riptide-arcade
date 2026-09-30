@@ -8,10 +8,12 @@
  *   2. a bounded, seeded, exploratory "mash the canonical actions" session.
  *
  * For both runs it captures: screenshots on every __test.state() transition
- * PLUS every ~5s of wall-clock progress, an FPS sample series (real rAF
- * timestamps), the final __test.snapshot(), the states visited in order, and
- * __test.errors. It writes <game-dir>/playtest-report/ containing the
- * screenshots, report.json (machine-readable) and report.md (pre-filled,
+ * PLUS every ~5s of accumulated PLAY time (time actually spent in PLAYING —
+ * see tools/playtest/lib/capture.js; never wall-clock time, and never while
+ * MENU/PAUSED/GAME_OVER), an FPS sample series (real rAF timestamps), the
+ * final __test.snapshot(), the states visited in order, and __test.errors.
+ * It writes <game-dir>/playtest-report/ containing the screenshots,
+ * report.json (machine-readable) and report.md (pre-filled,
  * human/agent-completed).
  *
  * Exit code is non-zero if: the harness itself failed; either run recorded
@@ -71,7 +73,7 @@ function usage() {
     `  --explore-interval-min=MS   Min real ms between exploratory decisions (default ${DEFAULTS.exploreIntervalMin}).`,
     `  --explore-interval-max=MS   Max real ms between exploratory decisions (default ${DEFAULTS.exploreIntervalMax}).`,
     `  --tick-chunk=N              Max __test.tick() step size per call while replaying a probe (default ${DEFAULTS.tickChunk}).`,
-    `  --periodic-ms=MS            Wall-clock cadence for periodic screenshots (default ${DEFAULTS.periodicMs}).`,
+    `  --periodic-ms=MS            Play-time cadence for periodic screenshots — ms of accumulated PLAYING time, not wall clock (default ${DEFAULTS.periodicMs}).`,
     `  --poll-ms=MS                State-poll interval used to catch transitions during waits (default ${DEFAULTS.pollMs}).`,
     '  --help, -h                  Show this message.',
   ].join('\n');
@@ -252,6 +254,11 @@ async function main() {
           statesVisited: probeResult.statesVisited,
           reachedPlaying: probeResult.reachedPlaying,
           durationMs: probeResult.durationMs,
+          // Accumulated PLAYING time (seconds) the periodic screenshot
+          // cadence is keyed to — see tools/playtest/lib/capture.js. Recorded
+          // here so the "every 5s of play" cadence is auditable rather than
+          // trusted (defect C4).
+          playSeconds: probeResult.playSeconds,
           fps: { ...probeFpsStats, series: probeResult.fpsSeries },
           screenshots: probeResult.screenshots,
           finalSnapshot: probeResult.finalSnapshot,
@@ -266,6 +273,7 @@ async function main() {
           statesVisited: exploreResult.statesVisited,
           reachedPlaying: exploreResult.reachedPlaying,
           durationMs: exploreResult.durationMs,
+          playSeconds: exploreResult.playSeconds,
           fps: { ...exploreFpsStats, series: exploreResult.fpsSeries },
           screenshots: exploreResult.screenshots,
           finalSnapshot: exploreResult.finalSnapshot,

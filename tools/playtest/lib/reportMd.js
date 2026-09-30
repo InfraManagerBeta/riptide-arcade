@@ -53,6 +53,8 @@ function buildReportMd(data) {
 | Total error count | ${overallErrorCount} |
 | Screenshots — probe | ${probe.skipped ? 0 : probe.screenshots.transitions.length + probe.screenshots.periodic.length} (${probe.skipped ? 0 : probe.screenshots.transitions.length} transition + ${probe.skipped ? 0 : probe.screenshots.periodic.length} periodic) |
 | Screenshots — exploratory | ${explore.screenshots.transitions.length + explore.screenshots.periodic.length} (${explore.screenshots.transitions.length} transition + ${explore.screenshots.periodic.length} periodic) |
+| Play seconds — probe (periodic cadence basis) | ${probe.skipped ? 'n/a' : fmtNum(probe.playSeconds, 1)}s |
+| Play seconds — exploratory (periodic cadence basis) | ${fmtNum(explore.playSeconds, 1)}s |
 
 FPS stats (from real requestAnimationFrame timestamps):
 ${fpsLine('probe', probe.skipped ? null : probe.fps)}

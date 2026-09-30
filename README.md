@@ -71,6 +71,11 @@ playtest run that hits an uncaught error all fail the command and, in CI, the PR
 4. Ship `games/<game>/budgets.json` (defaults apply for any key you omit) and
    `games/<game>/playtest.probe.js` (a scripted input sequence exercising the core mechanic)
    alongside `index.html`.
+5. If the game cannot lose while idle (`journey.js`'s bounded no-input search will never reach
+   `GAME_OVER`), ship an optional `games/<game>/verify.hints.js` exporting
+   `{ toGameOver: [ { action, pressed, ticks } ], restart? }` — the same step shape
+   `playtest.probe.js` uses — to script the `PLAYING → GAME_OVER` (and, optionally,
+   `GAME_OVER → PLAYING`) transition instead.
 
 ## How a delivered game PR is reviewed
 

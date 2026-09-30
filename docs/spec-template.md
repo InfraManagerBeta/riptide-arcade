@@ -123,6 +123,11 @@ standing for every game task — do not restate it as if it were specific to thi
 section exists only to name the game-specific probes worth scripting on top of that baseline:
 list two or three concrete probes and, for each, what it proves.*
 
+*If the game cannot lose while idle (`journey.js`'s `PLAYING → GAME_OVER` check will otherwise
+fail with no way to pass), ship `games/<game>/verify.hints.js` exporting
+`{ toGameOver: [ { action, pressed, ticks } ], restart? }` (same step shape as
+`playtest.probe.js`) to script that transition.*
+
 **Example**
 
 Standing: `npm run verify -- games/comet-catcher` and `npm run regression` both green; a

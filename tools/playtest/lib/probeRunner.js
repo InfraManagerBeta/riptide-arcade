@@ -12,7 +12,8 @@ const path = require('path');
 // __test.tick(n) is chunked into small groups so the capture session's
 // transition-polling actually gets a chance to observe intermediate states
 // inside a single big `ticks` step, instead of only seeing the state after
-// the whole step completes.
+// the whole step completes. It also lets capture.recordTicks() credit
+// play-time cadence (see capture.js) in the same small increments.
 const DEFAULT_TICK_CHUNK = 20;
 
 function loadProbe(gameDir) {
@@ -39,8 +40,9 @@ async function runProbe({ page, gameDir, capture, tickChunk = DEFAULT_TICK_CHUNK
       statesVisited: [],
       reachedPlaying: false,
       durationMs: 0,
+      playSeconds: 0,
       fpsSeries: [],
-      screenshots: { transitions: [], periodic: [] },
+      screenshots: { transitions: [], periodic: [], periodicPlaySeconds: [] },
       finalSnapshot: null,
       errors: [],
     };
@@ -63,6 +65,12 @@ async function runProbe({ page, gameDir, capture, tickChunk = DEFAULT_TICK_CHUNK
         const chunk = Math.min(tickChunk, remaining);
         // eslint-disable-next-line no-await-in-loop
         await page.evaluate((n) => window.__test.tick(n), chunk);
+        // Credits this chunk's simulated time (chunk * FIXED_DT) to the
+        // play-time accumulator IF the game was PLAYING going into it — see
+        // capture.js. __test.tick() costs no wall clock, so without this the
+        // periodic "every 5s of play" cadence would never fire for a probe
+        // run driven entirely through tick() (defect C4).
+        capture.recordTicks(chunk);
         remaining -= chunk;
         // eslint-disable-next-line no-await-in-loop
         await capture.poll();
@@ -85,8 +93,13 @@ async function runProbe({ page, gameDir, capture, tickChunk = DEFAULT_TICK_CHUNK
     statesVisited: capture.statesVisited,
     reachedPlaying: capture.statesVisited.includes('PLAYING'),
     durationMs: capture.durationMs(),
+    playSeconds: capture.playSeconds,
     fpsSeries,
-    screenshots: { transitions: capture.transitionShots, periodic: capture.periodicShots },
+    screenshots: {
+      transitions: capture.transitionShots,
+      periodic: capture.periodicShots,
+      periodicPlaySeconds: capture.periodicShotsPlaySeconds,
+    },
     finalSnapshot,
     errors,
   };
