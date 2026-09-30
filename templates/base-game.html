@@ -233,10 +233,11 @@
     // effects use a tick counter (ticks * FIXED_DT). __test.tick() and
     // the rAF loop both drive THIS function; it is the single sim entry point.
     //
-    // RULE: updateContinuousAudio() runs unconditionally, BEFORE any
-    // state-guarded early return below, so continuous sounds can never keep
-    // playing into a state that shouldn't have them.
-    updateContinuousAudio();
+    // RULE: do NOT call updateContinuousAudio() here. It is a PER-FRAME hook,
+    // not a per-step one: frame() calls it unconditionally at the top of every
+    // rAF frame (and __test.tick() once per invocation). Calling it from this
+    // per-step path would skip it on frames that run zero steps and double it
+    // on slow frames.
     gameUpdate(dt);
     totalTicks++;
     for (const a of ACTION_NAMES) prevActions[a] = actions[a]; // edge bookkeeping — keep LAST
@@ -253,6 +254,13 @@
   let lastFrameTime = null;
   function frame(now) {
     requestAnimationFrame(frame);
+    // RULE: updateContinuousAudio() runs unconditionally EVERY FRAME, right
+    // here — BEFORE the first-frame early return below and BEFORE the fixed-
+    // step loop — so continuous sounds can never leak across states, even on
+    // frames that run zero sim steps. Do not move it into update(): that would
+    // tie it to fixed steps (skipped on high-refresh frames, doubled on slow
+    // ones) instead of frames.
+    updateContinuousAudio();
     if (lastFrameTime === null) { lastFrameTime = now; render(1); return; }
     let delta = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
@@ -304,6 +312,9 @@
         for (let i = 0; i < n; i++) update(FIXED_DT);
         accumulator = 0;
         lastFrameTime = null;
+        // Headless runs drive no rAF frames, so the per-frame audio hook is
+        // exercised here: once per tick() invocation, alongside render(1).
+        updateContinuousAudio();
         render(1);
       },
       // deterministic reseed of the PRNG (mulberry32 has no derived state)
@@ -348,7 +359,7 @@
   function onStateEnter(next) { /* placeholder: nothing to set up */ }
   function onStateExit(prev) { /* placeholder: nothing to tear down */ }
 
-  // RULE: continuous/looping sound levels are updated HERE every tick — this
+  // RULE: continuous/looping sound levels are updated HERE every frame — this
   // hook runs before any state guard, so a loop can never leak across states.
   function updateContinuousAudio() { /* placeholder: no continuous sounds */ }
 

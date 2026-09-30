@@ -369,7 +369,7 @@
   }
   function onStateExit(prev) { /* nothing to tear down */ }
 
-  // RULE: continuous/looping sound levels are updated HERE every tick — this
+  // RULE: continuous/looping sound levels are updated HERE every frame — this
   // hook runs before any state guard, so a loop can never leak across states.
   function updateContinuousAudio() { /* fixture has no continuous sounds */ }
 
